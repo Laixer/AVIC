@@ -97,6 +97,7 @@ struct avic_bridge
     struct avic_usb_tx_urb_context tx_context[TX_MAX_CONTENT_SLOTS];
 };
 
+/* AVIC frame which carries the payload. */
 struct avic_frame
 {
     __u8 type;     /* Frame type */
@@ -105,8 +106,6 @@ struct avic_frame
     __u8 len;      /* Payload length */
     __u8 data[48]; /* Payload */
 } __attribute__((packed));
-
-static struct avic_bridge *g_dev = NULL;
 
 static void avic_usb_write_bulk_callback(struct urb *urb)
 {
@@ -260,9 +259,7 @@ cleanup_urb:
 
 static int avic_can_open(struct net_device *netdev)
 {
-    int err = 0;
-
-    err = open_candev(netdev);
+    int err = open_candev(netdev);
     if (err)
     {
         return err;
@@ -305,8 +302,6 @@ static const struct can_bittiming_const avic_can_bittiming_const = {
 
 static int avic_can_set_mode(struct net_device *netdev, enum can_mode mode)
 {
-    // struct avic_bridge *dev = netdev_priv(netdev);
-
     switch (mode)
     {
     case CAN_MODE_START:
@@ -321,6 +316,7 @@ static int avic_can_set_mode(struct net_device *netdev, enum can_mode mode)
 
 static int avic_can_set_bittiming(struct net_device *netdev)
 {
+    /* TODO: Send the bittime change to the AVIC */
     return 0;
 }
 
@@ -426,6 +422,7 @@ static int avic_usb_configure_peripheral(struct avic_bridge *dev)
 
     pr_info("synchonize peripheral clock with host\n");
 
+    // TODO: Move into func.
     /* Clock sync */
     retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
                              USB_REQ_SYNC_CLOCK, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0x3, 0,
@@ -454,12 +451,14 @@ static int avic_usb_configure_peripheral(struct avic_bridge *dev)
 
     pr_info("status endpoint interval running\n");
 
+    // TODO: Move to setup. We need to release this in the discon.
     urb = usb_alloc_urb(0, GFP_ATOMIC);
     if (!urb)
     {
         return retval;
     }
 
+    // TODO: Move to setup. We need to release this in the discon.
     buf = usb_alloc_coherent(dev->udev, dev->read_ep.max_packet_size, GFP_ATOMIC, &urb->transfer_dma);
     if (!buf)
     {
@@ -501,6 +500,7 @@ static int avic_can_setup(struct usb_interface *intf, const struct usb_device_id
     struct usb_endpoint_descriptor *read_in, *write_out, *status_in;
     int i = 0, retval = -ENOMEM;
 
+    // TODO: Move to probe
     pr_info("found AVIC CAN interface\n");
 
     netdev = alloc_candev(sizeof(struct avic_bridge), 32);
@@ -604,8 +604,6 @@ static int avic_can_setup(struct usb_interface *intf, const struct usb_device_id
         goto cleanup_status_ep_buffer;
     }
 
-    g_dev = dev;
-
     return avic_usb_configure_peripheral(dev);
 
 cleanup_status_ep_buffer:
@@ -621,6 +619,8 @@ cleanup_candev:
 }
 
 /*
+ * Probe the USB interface.
+ * 
  * Probe the USB interface and determine which AVIC controller will
  * be loaded.
  */
@@ -631,7 +631,9 @@ static int avic_usb_probe(struct usb_interface *intf,
 }
 
 /*
- * called by the usb core when the device is removed from the system
+ * Called by the usb core when the device is removed from the system.
+ *
+ * This method will release all unmanaged resources back to the kernel.
  */
 static void avic_usb_disconnect(struct usb_interface *intf)
 {
@@ -650,37 +652,41 @@ static void avic_usb_disconnect(struct usb_interface *intf)
         unregister_candev(dev->netdev);
 
         free_candev(dev->netdev);
-
-        g_dev = NULL;
     }
 }
 
 /* Table of devices that work with the AVIC bridge driver. */
 static struct usb_device_id avic_usb_table[] = {
-    {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID, AVIC_BRIDGE_PRODUCT_ID, AVIC_BRIDGE_CAN_IFACE_CLASS, AVIC_BRIDGE_CAN_IFACE_SUBCLASS, AVIC_BRIDGE_CAN_IFACE_PROTO)},
+    {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID,
+                                   AVIC_BRIDGE_PRODUCT_ID,
+                                   AVIC_BRIDGE_CAN_IFACE_CLASS,
+                                   AVIC_BRIDGE_CAN_IFACE_SUBCLASS,
+                                   AVIC_BRIDGE_CAN_IFACE_PROTO)},
     {} /* Terminating entry */
 };
 
 MODULE_DEVICE_TABLE(usb, avic_usb_table);
 
-static ssize_t temperature_show(struct kobject *kobj, struct kobj_attribute *attr,
+static ssize_t temperature_show(struct device *udev,
+                                struct device_attribute *attr,
                                 char *buf)
 {
-    // TODO: Get rid of the global. There must be a way to fetch the corresponding device.
-    if (g_dev)
+    struct usb_interface *intf = to_usb_interface(udev);
+    struct avic_bridge *dev = usb_get_intfdata(intf);
+
+    if (dev)
     {
-        u32 *temp = (u32 *)&g_dev->status_ep.buffer[2];
+        u32 *temp = (u32 *)&dev->status_ep.buffer[2];
         return sysfs_emit(buf, "%u\n", *temp);
     }
 
-    // TODO: Maybe an error?
-    return sysfs_emit(buf, "%u\n", 0);
+    return 0;
 }
 
-static struct kobj_attribute chl_temperature_attr = __ATTR_RO(temperature);
+static DEVICE_ATTR_RO(temperature);
 
 static struct attribute *dev_attrs[] = {
-    &chl_temperature_attr.attr,
+    &dev_attr_temperature.attr,
     NULL,
 };
 
@@ -693,7 +699,6 @@ static const struct attribute_group *dev_attr_groups[] = {
     NULL,
 };
 
-/* usb specific object needed to register this driver with the usb subsystem */
 static struct usb_driver avic_usb_driver = {
     .name = DRV_NAME,
     .probe = avic_usb_probe,
