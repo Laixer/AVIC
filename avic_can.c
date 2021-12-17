@@ -10,6 +10,10 @@
  *  - AVIC controller
  */
 
+// TODO:
+// - More read buffers
+// - Locking
+
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
@@ -101,6 +105,8 @@ struct avic_frame
     __u8 len;      /* Payload length */
     __u8 data[48]; /* Payload */
 } __attribute__((packed));
+
+static struct avic_bridge *g_dev = NULL;
 
 static void avic_usb_write_bulk_callback(struct urb *urb)
 {
@@ -598,6 +604,8 @@ static int avic_can_setup(struct usb_interface *intf, const struct usb_device_id
         goto cleanup_status_ep_buffer;
     }
 
+    g_dev = dev;
+
     return avic_usb_configure_peripheral(dev);
 
 cleanup_status_ep_buffer:
@@ -642,6 +650,8 @@ static void avic_usb_disconnect(struct usb_interface *intf)
         unregister_candev(dev->netdev);
 
         free_candev(dev->netdev);
+
+        g_dev = NULL;
     }
 }
 
@@ -656,7 +666,15 @@ MODULE_DEVICE_TABLE(usb, avic_usb_table);
 static ssize_t temperature_show(struct kobject *kobj, struct kobj_attribute *attr,
                                 char *buf)
 {
-    return sysfs_emit(buf, "%u\n", 24);
+    // TODO: Get rid of the global. There must be a way to fetch the corresponding device.
+    if (g_dev)
+    {
+        u32 *temp = (u32 *)&g_dev->status_ep.buffer[2];
+        return sysfs_emit(buf, "%u\n", *temp);
+    }
+
+    // TODO: Maybe an error?
+    return sysfs_emit(buf, "%u\n", 0);
 }
 
 static struct kobj_attribute chl_temperature_attr = __ATTR_RO(temperature);
