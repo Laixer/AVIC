@@ -20,6 +20,8 @@
 #define AVIC_BRIDGE_CAN_IFACE_SUBCLASS_DATA 0xc
 #define AVIC_BRIDGE_CAN_IFACE_PROTO 0
 
+#define AVIC_USB_CONTROL_ENDPOINT_ADDRESS 0
+
 /* Peripheral-side endpoint info. */
 struct avic_usb_endpoint_info
 {

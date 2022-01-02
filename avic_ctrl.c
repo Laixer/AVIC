@@ -90,7 +90,7 @@ static int command_request_send(struct avic_control_bridge *dev,
     }
 
     // TODO: This is a blocking call, maybe we want to do this async.
-    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
+    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
                              command->request, USB_TYPE_CLASS | USB_RECIP_INTERFACE, command->value, 0,
                              data, data_sz, USB_CTRL_SET_TIMEOUT);
     if (unlikely(retval < 0))
@@ -291,7 +291,7 @@ static const struct file_operations avic_ctrl_fops = {
     .release = avic_ctrl_release,
 };
 
-/*
+/**
  * USB class driver info in order to get a minor number from the USB core,
  * and to have the device registered with the driver core. The driver core
  * will then initialize the file operations and create the character device.
@@ -318,7 +318,7 @@ static int sync_peripheral_clock(struct avic_control_bridge *dev)
 
     timestamp = ktime_get_real();
 
-    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
+    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
                              USB_REQ_SYNC_CLOCK, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0x3, 0,
                              &timestamp, sizeof(ktime_t), USB_CTRL_SET_TIMEOUT);
     if (unlikely(retval < 0))
@@ -338,6 +338,14 @@ static int avic_control_configure_peripheral(struct avic_control_bridge *dev)
     int retval = 0;
     struct command_request command_dump_info;
 
+    /**
+     * Dump the peripheral information to the log. This is usefull for 
+     * diagnostics.
+     * 
+     * The standard demands this command to be send before any other
+     * application level data is send on the out endpoint. Therefore
+     * this command must be the first issued within this method.
+     */
     command_dump_info.request = USB_REQ_DUMP_INFO;
     retval = command_request_send(dev, &command_dump_info);
 
