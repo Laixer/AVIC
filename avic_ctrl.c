@@ -6,6 +6,9 @@
  * Copyright (C) 2021 Laixer Equipment B.V.
  */
 
+// TODO:
+// - reset
+
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
@@ -54,6 +57,9 @@ enum command_request_type
     /* System reset request. */
     USB_REQ_SYSTEM_RESET = 9,
 
+    /* Subsystem reset request. */
+    USB_REQ_SUBSYSTEM_RESET = 10,
+
     /* Halt all motor functions. */
     USB_REQ_HALT_MOTION = 128,
 };
@@ -96,8 +102,15 @@ static void avic_usb_fire_and_forget_callback(struct urb *urb)
     }
 }
 
-static int usb_control_msg_submit(struct usb_device *dev, unsigned int pipe, u8 request,
-                                  u8 request_type, u16 value, u16 index, void *data, u16 size)
+/**
+ * Submit control message without waiting for the result.
+ * 
+ * This method can be used to send control messages when the result is either not
+ * important or the caller cannot wait for the result. Such a situation is common
+ * in interrupt handlers and critical sections.
+ */
+int usb_control_msg_submit(struct usb_device *dev, unsigned int pipe, u8 request,
+                           u8 request_type, u16 value, u16 index, void *data, u16 size)
 {
     struct usb_ctrlrequest data_request;
     struct urb *urb = usb_alloc_urb(0, GFP_KERNEL);
@@ -118,6 +131,7 @@ static int usb_control_msg_submit(struct usb_device *dev, unsigned int pipe, u8 
 
     return usb_submit_urb(urb, GFP_KERNEL);
 }
+EXPORT_SYMBOL_GPL(usb_control_msg_submit);
 
 static int command_request_send(struct avic_control_bridge *dev,
                                 struct command_request *command)
@@ -133,6 +147,8 @@ static int command_request_send(struct avic_control_bridge *dev,
         break;
     case USB_REQ_SYSTEM_RESET:
         command->value = 0;
+        break;
+    case USB_REQ_SUBSYSTEM_RESET:
         break;
     case USB_REQ_HALT_MOTION:
         command->value = 0;
