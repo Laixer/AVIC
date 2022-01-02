@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * AVIC Bridge driver.
+ * AVIC CAN driver.
  *
  * Copyright (C) 2021 Yorick de Wid (yorick@laixer.com)
  * Copyright (C) 2021 Laixer Equipment B.V.
- * 
- * This driver includes the following mini drivers:
- *  - CAN FD USB proxy via can-dev module
- *  - AVIC controller
  */
 
 // TODO:
@@ -23,22 +19,16 @@
 #include <linux/can.h>
 #include <linux/can/dev.h>
 
+#include "avic.h"
+
 /* Driver identifier */
 #define DRV_NAME "avic_can"
 
-/* USB vendor and product identifiers */
-#define AVIC_BRIDGE_VENDOR_ID 0x1d6b
-#define AVIC_BRIDGE_PRODUCT_ID 0x27dd
-
-/* USB CAN interface properties */
-#define AVIC_BRIDGE_CAN_IFACE_CLASS 255
-#define AVIC_BRIDGE_CAN_IFACE_SUBCLASS 0
-#define AVIC_BRIDGE_CAN_IFACE_PROTO 0
-
 /* USB interrupt requests */
-#define USB_REQ_SYNC_CLOCK 7    /* Synchornize the host clock */
-#define USB_REQ_SYSTEM_RESET 9  /* Request a reset on the peripheral */
-#define USB_REQ_HALT_MOTION 128 /* Halt all motion devices connected to the peripheral */
+#define USB_REQ_DUMP_INFO 2     /* Request info dump to console output. */
+#define USB_REQ_SYNC_CLOCK 7    /* Clock synchronization request. */
+#define USB_REQ_SYSTEM_RESET 9  /* System reset request. */
+#define USB_REQ_HALT_MOTION 128 /* Halt all motor functions. */
 
 /* AVIC frame default port. Can change in the future */
 #define AVIC_PORT_DEFAULT 0
@@ -53,29 +43,24 @@
 
 #define MIN_BULK_PACKET_SIZE 64
 
-struct avic_usb_endpoint_info
-{
-    int address;
-    int max_packet_size;
-};
-
-// TODO: include info struct
-struct avic_endpoint
-{
-    int address;
-
-    struct urb *urb;
-    u8 *buffer;
-    int buffer_sz;
-
-    int frame_sz;
-};
-
 struct avic_usb_tx_urb_context
 {
     struct avic_bridge *dev;
     unsigned int is_free;
     unsigned int index;
+};
+
+struct avic_control_bridge
+{
+    struct usb_device *udev;
+
+    struct usb_anchor tx_submitted;
+    struct usb_anchor rx_submitted;
+
+    struct avic_endpoint status_ep;
+
+    bool ongoing_read; /* a read is going on */
+    wait_queue_head_t bulk_in_wait;
 };
 
 struct avic_bridge
@@ -438,7 +423,7 @@ static int avic_usb_configure_peripheral(struct avic_bridge *dev)
     usb_fill_int_urb(dev->status_ep.urb, dev->udev,
                      usb_rcvintpipe(dev->udev, 1),
                      dev->status_ep.buffer,
-                     dev->status_ep.buffer_sz,
+                     dev->status_ep.info.max_packet_size,
                      avic_usb_read_interrupt_callback, dev, 1);
 
     retval = usb_submit_urb(dev->status_ep.urb, GFP_KERNEL);
@@ -493,14 +478,14 @@ cleanup_urb:
     return retval;
 }
 
-static int avic_can_setup(struct usb_interface *intf, const struct usb_device_id *id)
+static int avic_usb_probe(struct usb_interface *intf,
+                          const struct usb_device_id *id)
 {
     struct net_device *netdev;
     struct avic_bridge *dev;
-    struct usb_endpoint_descriptor *read_in, *write_out, *status_in;
+    struct usb_endpoint_descriptor *read_in, *write_out;
     int i = 0, retval = -ENOMEM;
 
-    // TODO: Move to probe
     pr_info("found AVIC CAN interface\n");
 
     netdev = alloc_candev(sizeof(struct avic_bridge), 32);
@@ -542,33 +527,33 @@ static int avic_can_setup(struct usb_interface *intf, const struct usb_device_id
     retval = usb_find_common_endpoints(intf->cur_altsetting,
                                        &read_in,
                                        &write_out,
-                                       &status_in, NULL);
+                                       NULL, NULL);
     if (retval)
     {
         pr_err("did not find expected endpoints\n");
         goto cleanup_candev;
     }
 
-    dev->status_ep.address = usb_endpoint_num(status_in);
-    dev->status_ep.buffer_sz = usb_endpoint_maxp(status_in);
+    // dev->status_ep.address = usb_endpoint_num(status_in);
+    // dev->status_ep.buffer_sz = usb_endpoint_maxp(status_in);
 
-    dev->status_ep.urb = usb_alloc_urb(0, GFP_KERNEL);
-    if (!dev->status_ep.urb)
-    {
-        pr_err("Couldn't alloc intr_urb");
+    // dev->status_ep.urb = usb_alloc_urb(0, GFP_KERNEL);
+    // if (!dev->status_ep.urb)
+    // {
+    //     pr_err("Couldn't alloc intr_urb");
 
-        retval = -ENOMEM;
-        goto cleanup_candev;
-    }
+    //     retval = -ENOMEM;
+    //     goto cleanup_candev;
+    // }
 
-    dev->status_ep.buffer = kmalloc(dev->status_ep.buffer_sz, GFP_KERNEL);
-    if (!dev->status_ep.buffer)
-    {
-        pr_err("Couldn't alloc intr_in_buffer");
+    // dev->status_ep.buffer = kmalloc(dev->status_ep.buffer_sz, GFP_KERNEL);
+    // if (!dev->status_ep.buffer)
+    // {
+    //     pr_err("Couldn't alloc intr_in_buffer");
 
-        retval = -ENOMEM;
-        goto cleanup_status_ep;
-    }
+    //     retval = -ENOMEM;
+    //     goto cleanup_status_ep;
+    // }
 
     dev->write_ep.address = usb_endpoint_num(write_out);
     dev->write_ep.max_packet_size = usb_endpoint_maxp(write_out);
@@ -609,25 +594,13 @@ static int avic_can_setup(struct usb_interface *intf, const struct usb_device_id
 cleanup_status_ep_buffer:
     kfree(dev->status_ep.buffer);
 
-cleanup_status_ep:
+    // cleanup_status_ep:
     usb_free_urb(dev->status_ep.urb);
 
 cleanup_candev:
     free_candev(netdev);
 
     return retval;
-}
-
-/*
- * Probe the USB interface.
- * 
- * Probe the USB interface and determine which AVIC controller will
- * be loaded.
- */
-static int avic_usb_probe(struct usb_interface *intf,
-                          const struct usb_device_id *id)
-{
-    return avic_can_setup(intf, id);
 }
 
 /*
@@ -660,7 +633,7 @@ static struct usb_device_id avic_usb_table[] = {
     {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID,
                                    AVIC_BRIDGE_PRODUCT_ID,
                                    AVIC_BRIDGE_CAN_IFACE_CLASS,
-                                   AVIC_BRIDGE_CAN_IFACE_SUBCLASS,
+                                   AVIC_BRIDGE_CAN_IFACE_SUBCLASS_DATA,
                                    AVIC_BRIDGE_CAN_IFACE_PROTO)},
     {} /* Terminating entry */
 };
