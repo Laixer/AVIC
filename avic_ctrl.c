@@ -20,7 +20,7 @@
 // TODO: This needs to be assigned by usb-dev mailing list.
 #define AVIC_USB_CTRL_MINOR_BASE 192
 
-#define CLOCK_SYNC_INTERVAL_SEC 5000
+#define CLOCK_SYNC_INTERVAL_SEC 60000
 
 static struct usb_driver avic_usb_driver;
 
@@ -142,7 +142,6 @@ static int command_request_send(struct avic_control_bridge *dev,
         return -EINVAL;
     }
 
-    // TODO: This is a blocking call, maybe we want to do this async.
     retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
                              command->request, USB_TYPE_CLASS | USB_RECIP_INTERFACE, command->value, 0,
                              data, data_sz, USB_CTRL_SET_TIMEOUT);
@@ -358,11 +357,15 @@ static struct usb_class_driver avic_ctrl_class = {
 /**
  * Synchronize the peripheral clock (wall clock) with the host.
  * 
- * Any time deviations will propagate downwards with decreasing accuracy.
- * It is therefore assumed that the kernel time is accurate.
+ * Any time deviations will propagate downwards with degrading accuracy.
+ * It is therefore assumed that the kernel time is accurate and correct.
  * 
  * This method can be called anytime and *must* be called no less than
  * once every clock hour to keep synchonized network time drift to a minimum.
+ * 
+ * This method will not block and can be safely called from interrupt context
+ * or critical section. For the same reason it is undetermined if the command
+ * was accepted.
  */
 static int sync_peripheral_clock(struct avic_control_bridge *dev)
 {
@@ -371,17 +374,17 @@ static int sync_peripheral_clock(struct avic_control_bridge *dev)
 
     timestamp = ktime_get_real();
 
-    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
-                             USB_REQ_SYNC_CLOCK, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0x3, 0,
-                             &timestamp, sizeof(ktime_t), USB_CTRL_SET_TIMEOUT);
-    if (unlikely(retval < 0))
+    retval = usb_control_msg_submit(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
+                                    USB_REQ_SYNC_CLOCK, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0, 0,
+                                    &timestamp, sizeof(ktime_t));
+    if (unlikely(retval))
     {
-        pr_warn("usb_control_msg failed: %d\n", retval);
+        pr_err("usb_control_msg_submit failed: %d\n", retval);
 
         return retval;
     }
 
-    pr_info("peripheral timestamp synchonized with host\n");
+    pr_info("peripheral clock synchonization requested\n");
 
     return 0;
 }
@@ -392,12 +395,11 @@ void clock_sync_timer_callback(struct timer_list *timer)
                                                                 timer,
                                                                 timer);
 
-    // sync_peripheral_clock(local_clock_sync_timer->dev);
+    sync_peripheral_clock(local_clock_sync_timer->dev);
 
+    /* Reschedule the same task. */
     mod_timer(&clock_sync_timer.timer,
               jiffies + msecs_to_jiffies(CLOCK_SYNC_INTERVAL_SEC));
-
-    pr_info("hi this is timer\n");
 }
 
 /**
