@@ -76,6 +76,49 @@ struct avic_timer_list
 
 static struct avic_timer_list clock_sync_timer;
 
+static void avic_usb_fire_and_forget_callback(struct urb *urb)
+{
+    switch (urb->status)
+    {
+    case 0: /* success */
+        break;
+
+    case -ECONNRESET: /* unlink */
+    case -ENOENT:
+    case -EPIPE:
+    case -EPROTO:
+    case -ESHUTDOWN:
+        return;
+
+    default:
+        pr_warn("rx interrupt aborted: %d\n", urb->status);
+        return;
+    }
+}
+
+static int usb_control_msg_submit(struct usb_device *dev, unsigned int pipe, u8 request,
+                                  u8 request_type, u16 value, u16 index, void *data, u16 size)
+{
+    struct usb_ctrlrequest data_request;
+    struct urb *urb = usb_alloc_urb(0, GFP_KERNEL);
+
+    if (!urb)
+    {
+        return -ENOMEM;
+    }
+
+    data_request.bRequestType = request_type;
+    data_request.bRequest = request;
+    data_request.wValue = cpu_to_le16(value);
+    data_request.wIndex = cpu_to_le16(index);
+    data_request.wLength = cpu_to_le16(size);
+
+    usb_fill_control_urb(urb, dev, pipe, (unsigned char *)&data_request,
+                         data, size, avic_usb_fire_and_forget_callback, NULL);
+
+    return usb_submit_urb(urb, GFP_KERNEL);
+}
+
 static int command_request_send(struct avic_control_bridge *dev,
                                 struct command_request *command)
 {
