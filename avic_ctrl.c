@@ -20,6 +20,8 @@
 // TODO: This needs to be assigned by usb-dev mailing list.
 #define AVIC_USB_CTRL_MINOR_BASE 192
 
+#define CLOCK_SYNC_INTERVAL_SEC 5000
+
 static struct usb_driver avic_usb_driver;
 
 struct avic_usb_tx_urb_context
@@ -65,6 +67,14 @@ struct command_request
     /* Optional value. */
     u16 value;
 };
+
+struct avic_timer_list
+{
+    struct timer_list timer;
+    struct avic_control_bridge *dev;
+};
+
+static struct avic_timer_list clock_sync_timer;
 
 static int command_request_send(struct avic_control_bridge *dev,
                                 struct command_request *command)
@@ -333,6 +343,24 @@ static int sync_peripheral_clock(struct avic_control_bridge *dev)
     return 0;
 }
 
+void clock_sync_timer_callback(struct timer_list *timer)
+{
+    struct avic_timer_list *local_clock_sync_timer = from_timer(&clock_sync_timer,
+                                                                timer,
+                                                                timer);
+
+    // sync_peripheral_clock(local_clock_sync_timer->dev);
+
+    mod_timer(&clock_sync_timer.timer,
+              jiffies + msecs_to_jiffies(CLOCK_SYNC_INTERVAL_SEC));
+
+    pr_info("hi this is timer\n");
+}
+
+/**
+ * Configure the peripheral before use. Add any future confuration or setup
+ * commands to this method. The order of execution is of importance.
+ */
 static int avic_control_configure_peripheral(struct avic_control_bridge *dev)
 {
     int retval = 0;
@@ -350,6 +378,16 @@ static int avic_control_configure_peripheral(struct avic_control_bridge *dev)
     retval = command_request_send(dev, &command_dump_info);
 
     retval = sync_peripheral_clock(dev);
+
+    /**
+     * Start the interval timer which will synchonize the peripheral clock.
+     * 
+     * A low resolution jiffies timer is more than sufficient for the clock
+     * synchronization operation which need not to be percise.
+     */
+    clock_sync_timer.dev = dev;
+    timer_setup(&clock_sync_timer.timer, clock_sync_timer_callback, 0);
+    mod_timer(&clock_sync_timer.timer, jiffies + msecs_to_jiffies(CLOCK_SYNC_INTERVAL_SEC));
 
     return retval;
 }
@@ -450,6 +488,8 @@ static void avic_usb_disconnect(struct usb_interface *intf)
 
     if (dev)
     {
+        del_timer(&clock_sync_timer.timer);
+
         /* Return minor to control class */
         usb_deregister_dev(intf, &avic_ctrl_class);
 
