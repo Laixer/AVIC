@@ -2,8 +2,8 @@
 /*
  * AVIC interface.
  *
- * Copyright (C) 2021 Yorick de Wid (yorick@laixer.com)
- * Copyright (C) 2021 Laixer Equipment B.V.
+ * Copyright (C) 2021-2022 Yorick de Wid (yorick@laixer.com)
+ * Copyright (C) 2021-2022 Laixer Equipment B.V.
  * 
  * AVIC or Advanced Vehicle InterConnect is an open protocol to
  * communicate between a host controller and a peripheral. The
@@ -15,10 +15,10 @@
 #define AVIC_BRIDGE_PRODUCT_ID 0x27dd
 
 /* USB CAN interface properties */
-#define AVIC_BRIDGE_CAN_IFACE_CLASS 0xfe
-#define AVIC_BRIDGE_CAN_IFACE_SUBCLASS_CONTROL 0x4
-#define AVIC_BRIDGE_CAN_IFACE_SUBCLASS_DATA 0xc
-#define AVIC_BRIDGE_CAN_IFACE_PROTO 0
+#define AVIC_BRIDGE_IFACE_CLASS 0xfe
+#define AVIC_BRIDGE_IFACE_SUBCLASS_CONTROL 0x4
+#define AVIC_BRIDGE_IFACE_SUBCLASS_DATA 0xc
+#define AVIC_BRIDGE_IFACE_PROTO 0
 
 #define AVIC_USB_CONTROL_ENDPOINT_ADDRESS 0
 

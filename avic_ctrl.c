@@ -2,12 +2,13 @@
 /*
  * AVIC control driver.
  *
- * Copyright (C) 2021 Yorick de Wid (yorick@laixer.com)
- * Copyright (C) 2021 Laixer Equipment B.V.
+ * Copyright (C) 2021-2022 Yorick de Wid (yorick@laixer.com)
+ * Copyright (C) 2021-2022 Laixer Equipment B.V.
  */
 
 // TODO:
-// - reset
+// - Reset
+// - Non-blocking IO
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -567,9 +568,9 @@ static void avic_usb_disconnect(struct usb_interface *intf)
 static struct usb_device_id avic_usb_table[] = {
     {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID,
                                    AVIC_BRIDGE_PRODUCT_ID,
-                                   AVIC_BRIDGE_CAN_IFACE_CLASS,
-                                   AVIC_BRIDGE_CAN_IFACE_SUBCLASS_CONTROL,
-                                   AVIC_BRIDGE_CAN_IFACE_PROTO)},
+                                   AVIC_BRIDGE_IFACE_CLASS,
+                                   AVIC_BRIDGE_IFACE_SUBCLASS_CONTROL,
+                                   AVIC_BRIDGE_IFACE_PROTO)},
     {} /* Terminating entry */
 };
 

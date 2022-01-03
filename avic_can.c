@@ -2,8 +2,8 @@
 /*
  * AVIC CAN driver.
  *
- * Copyright (C) 2021 Yorick de Wid (yorick@laixer.com)
- * Copyright (C) 2021 Laixer Equipment B.V.
+ * Copyright (C) 2021-2022 Yorick de Wid (yorick@laixer.com)
+ * Copyright (C) 2021-2022 Laixer Equipment B.V.
  */
 
 // TODO:
@@ -632,52 +632,19 @@ static void avic_usb_disconnect(struct usb_interface *intf)
 static struct usb_device_id avic_usb_table[] = {
     {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID,
                                    AVIC_BRIDGE_PRODUCT_ID,
-                                   AVIC_BRIDGE_CAN_IFACE_CLASS,
-                                   AVIC_BRIDGE_CAN_IFACE_SUBCLASS_DATA,
-                                   AVIC_BRIDGE_CAN_IFACE_PROTO)},
+                                   AVIC_BRIDGE_IFACE_CLASS,
+                                   AVIC_BRIDGE_IFACE_SUBCLASS_DATA,
+                                   AVIC_BRIDGE_IFACE_PROTO)},
     {} /* Terminating entry */
 };
 
 MODULE_DEVICE_TABLE(usb, avic_usb_table);
-
-static ssize_t temperature_show(struct device *udev,
-                                struct device_attribute *attr,
-                                char *buf)
-{
-    struct usb_interface *intf = to_usb_interface(udev);
-    struct avic_bridge *dev = usb_get_intfdata(intf);
-
-    if (dev)
-    {
-        u32 *temp = (u32 *)&dev->status_ep.buffer[2];
-        return sysfs_emit(buf, "%u\n", *temp);
-    }
-
-    return 0;
-}
-
-static DEVICE_ATTR_RO(temperature);
-
-static struct attribute *dev_attrs[] = {
-    &dev_attr_temperature.attr,
-    NULL,
-};
-
-static struct attribute_group dev_attr_group = {
-    .attrs = dev_attrs,
-};
-
-static const struct attribute_group *dev_attr_groups[] = {
-    &dev_attr_group,
-    NULL,
-};
 
 static struct usb_driver avic_usb_driver = {
     .name = DRV_NAME,
     .probe = avic_usb_probe,
     .disconnect = avic_usb_disconnect,
     .id_table = avic_usb_table,
-    .dev_groups = dev_attr_groups,
 };
 
 module_usb_driver(avic_usb_driver);
