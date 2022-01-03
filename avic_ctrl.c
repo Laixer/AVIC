@@ -40,7 +40,8 @@ struct avic_control_bridge
 
     struct avic_endpoint status_ep;
 
-    struct mutex io_mutex;
+    struct mutex read_mutex;
+    struct mutex write_mutex;
     bool is_reading;
     wait_queue_head_t is_reading_wait;
 };
@@ -48,30 +49,18 @@ struct avic_control_bridge
 /* USB command requests. */
 enum command_request_type
 {
-    /* Request info dump to console output. */
-    USB_REQ_DUMP_INFO = 2,
-
-    /* Clock synchronization request. */
-    USB_REQ_SYNC_CLOCK = 7,
-
-    /* System reset request. */
-    USB_REQ_SYSTEM_RESET = 9,
-
-    /* Subsystem reset request. */
-    USB_REQ_SUBSYSTEM_RESET = 10,
-
-    /* Halt all motor functions. */
-    USB_REQ_HALT_MOTION = 128,
+    USB_REQ_DUMP_INFO = 2,        /* Request info dump to console output. */
+    USB_REQ_SYNC_CLOCK = 7,       /* Clock synchronization request. */
+    USB_REQ_SYSTEM_RESET = 9,     /* System reset request. */
+    USB_REQ_SUBSYSTEM_RESET = 10, /* Subsystem reset request. */
+    USB_REQ_HALT_MOTION = 128,    /* Halt all motor functions. */
 };
 
 /* AVIC command request. */
 struct command_request
 {
-    /* Command request. */
-    enum command_request_type request;
-
-    /* Optional value. */
-    u16 value;
+    u8 request; /* Command request. */
+    u16 value;  /* Optional value. */
 };
 
 struct avic_timer_list
@@ -259,11 +248,11 @@ static ssize_t avic_ctrl_read(struct file *file, char *buffer, size_t count,
         return 0;
     }
 
-    /*
+    /**
      * Accept a single reader at a time because there is only one
-     * status URB. While waiting sustain interrupts.
+     * status URB. Allow interrupts while waiting.
      */
-    retval = mutex_lock_interruptible(&dev->io_mutex);
+    retval = mutex_lock_interruptible(&dev->read_mutex);
     if (retval < 0)
     {
         return retval;
@@ -305,7 +294,7 @@ static ssize_t avic_ctrl_read(struct file *file, char *buffer, size_t count,
     }
 
 exit:
-    mutex_unlock(&dev->io_mutex);
+    mutex_unlock(&dev->read_mutex);
     return retval;
 }
 
@@ -335,20 +324,29 @@ static ssize_t avic_ctrl_write(struct file *file, const char *buffer,
         return retval;
     }
 
+    retval = mutex_lock_interruptible(&dev->write_mutex);
+    if (retval < 0)
+    {
+        return retval;
+    }
+
     if (copy_from_user(&local_buffer, buffer, count))
     {
         retval = -EFAULT;
-        return retval;
-        // goto error;
+        goto error;
     }
 
     retval = command_request_send(dev, (struct command_request *)&local_buffer);
     if (unlikely(retval < 0))
     {
-        return retval;
+        goto error;
     }
 
     return count;
+
+error:
+    mutex_unlock(&dev->write_mutex);
+    return retval;
 }
 
 static const struct file_operations avic_ctrl_fops = {
@@ -473,7 +471,8 @@ static int avic_usb_probe(struct usb_interface *intf,
 
     dev->udev = interface_to_usbdev(intf);
 
-    mutex_init(&dev->io_mutex);
+    mutex_init(&dev->read_mutex);
+    mutex_init(&dev->write_mutex);
     init_waitqueue_head(&dev->is_reading_wait);
 
     /*
@@ -583,6 +582,7 @@ static ssize_t temperature_show(struct device *udev,
     struct usb_interface *intf = to_usb_interface(udev);
     struct avic_control_bridge *dev = usb_get_intfdata(intf);
 
+    // TODO: SYNC THIS.
     if (dev)
     {
         u32 *temp = (u32 *)&dev->status_ep.buffer[2];
