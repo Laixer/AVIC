@@ -50,19 +50,6 @@ struct avic_usb_tx_urb_context
     unsigned int index;
 };
 
-struct avic_control_bridge
-{
-    struct usb_device *udev;
-
-    struct usb_anchor tx_submitted;
-    struct usb_anchor rx_submitted;
-
-    struct avic_endpoint status_ep;
-
-    bool ongoing_read; /* a read is going on */
-    wait_queue_head_t bulk_in_wait;
-};
-
 struct avic_bridge
 {
     /* The can-dev module expects this member. */
@@ -73,8 +60,6 @@ struct avic_bridge
 
     struct usb_anchor tx_submitted;
     struct usb_anchor rx_submitted;
-
-    struct avic_endpoint status_ep;
 
     struct avic_usb_endpoint_info write_ep;
     struct avic_usb_endpoint_info read_ep;
@@ -305,38 +290,6 @@ static int avic_can_set_bittiming(struct net_device *netdev)
     return 0;
 }
 
-static void avic_usb_read_interrupt_callback(struct urb *urb)
-{
-    struct avic_bridge *dev = urb->context;
-    int retval;
-
-    dev->status_ep.frame_sz = urb->actual_length;
-
-    switch (urb->status)
-    {
-    case 0: /* success */
-        break;
-
-    case -ECONNRESET: /* unlink */
-    case -ENOENT:
-    case -EPIPE:
-    case -EPROTO:
-    case -ESHUTDOWN:
-        return;
-
-    default:
-        pr_warn("rx interrupt aborted: %d\n", urb->status);
-        return;
-    }
-
-    /* Resubmit self */
-    retval = usb_submit_urb(urb, GFP_KERNEL);
-    if (unlikely(retval))
-    {
-        pr_err("usb_submit_urb failed: %d\n", retval);
-    }
-}
-
 static void avic_usb_read_bulk_callback(struct urb *urb)
 {
     struct avic_bridge *dev = urb->context;
@@ -391,6 +344,8 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
                       usb_rcvbulkpipe(dev->udev, dev->read_ep.address),
                       urb->transfer_buffer, dev->read_ep.max_packet_size,
                       avic_usb_read_bulk_callback, dev);
+    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+    usb_anchor_urb(urb, &dev->rx_submitted);
 
     retval = usb_submit_urb(urb, GFP_KERNEL);
     if (unlikely(retval))
@@ -399,42 +354,11 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
     }
 }
 
-static int avic_usb_configure_peripheral(struct avic_bridge *dev)
+static int avic_can_configure_peripheral(struct avic_bridge *dev)
 {
     struct urb *urb = NULL;
     u8 *buf = NULL;
     int retval = -ENOMEM;
-
-    pr_info("synchonize peripheral clock with host\n");
-
-    // TODO: Move into func.
-    /* Clock sync */
-    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
-                             USB_REQ_SYNC_CLOCK, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0x3, 0,
-                             NULL, 0, USB_CTRL_SET_TIMEOUT);
-    if (unlikely(retval))
-    {
-        pr_warn("usb_control_msg failed: %d\n", retval);
-
-        return retval;
-    }
-
-    /* Bootstrap the status interrupt reader */
-    usb_fill_int_urb(dev->status_ep.urb, dev->udev,
-                     usb_rcvintpipe(dev->udev, 1),
-                     dev->status_ep.buffer,
-                     dev->status_ep.info.max_packet_size,
-                     avic_usb_read_interrupt_callback, dev, 1);
-
-    retval = usb_submit_urb(dev->status_ep.urb, GFP_KERNEL);
-    if (unlikely(retval))
-    {
-        pr_err("usb_submit_urb failed: %d\n", retval);
-
-        return retval;
-    }
-
-    pr_info("status endpoint interval running\n");
 
     // TODO: Move to setup. We need to release this in the discon.
     urb = usb_alloc_urb(0, GFP_ATOMIC);
@@ -456,6 +380,7 @@ static int avic_usb_configure_peripheral(struct avic_bridge *dev)
                       buf, dev->read_ep.max_packet_size,
                       avic_usb_read_bulk_callback, dev);
     urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+    usb_anchor_urb(urb, &dev->rx_submitted);
 
     retval = usb_submit_urb(urb, GFP_ATOMIC);
     if (unlikely(retval))
@@ -481,9 +406,9 @@ cleanup_urb:
 static int avic_usb_probe(struct usb_interface *intf,
                           const struct usb_device_id *id)
 {
-    struct net_device *netdev;
-    struct avic_bridge *dev;
-    struct usb_endpoint_descriptor *read_in, *write_out;
+    struct net_device *netdev = NULL;
+    struct avic_bridge *dev = NULL;
+    struct usb_endpoint_descriptor *read_in = NULL, *write_out = NULL;
     int i = 0, retval = -ENOMEM;
 
     pr_info("found AVIC CAN interface\n");
@@ -491,7 +416,7 @@ static int avic_usb_probe(struct usb_interface *intf,
     netdev = alloc_candev(sizeof(struct avic_bridge), 32);
     if (!netdev)
     {
-        pr_err("could not alloc candev");
+        pr_err("could not allocate candev");
         return retval;
     }
 
@@ -520,9 +445,8 @@ static int avic_usb_probe(struct usb_interface *intf,
     netdev->flags |= IFF_ECHO; /* Local echo support */
 
     /*
-     * Look for the interrupt status endpoint in the current interface
-     * descriptor. This endpoint *must* exist otherwise we're uncertain
-     * about the AVIC bridge configuration.
+     * Look for the bulk endpoints in the current interface
+     * descriptor. These endpoints *must* exist in this interface.
      */
     retval = usb_find_common_endpoints(intf->cur_altsetting,
                                        &read_in,
@@ -530,30 +454,9 @@ static int avic_usb_probe(struct usb_interface *intf,
                                        NULL, NULL);
     if (retval)
     {
-        pr_err("did not find expected endpoints\n");
+        pr_err("did not find bulk endpoints\n");
         goto cleanup_candev;
     }
-
-    // dev->status_ep.address = usb_endpoint_num(status_in);
-    // dev->status_ep.buffer_sz = usb_endpoint_maxp(status_in);
-
-    // dev->status_ep.urb = usb_alloc_urb(0, GFP_KERNEL);
-    // if (!dev->status_ep.urb)
-    // {
-    //     pr_err("Couldn't alloc intr_urb");
-
-    //     retval = -ENOMEM;
-    //     goto cleanup_candev;
-    // }
-
-    // dev->status_ep.buffer = kmalloc(dev->status_ep.buffer_sz, GFP_KERNEL);
-    // if (!dev->status_ep.buffer)
-    // {
-    //     pr_err("Couldn't alloc intr_in_buffer");
-
-    //     retval = -ENOMEM;
-    //     goto cleanup_status_ep;
-    // }
 
     dev->write_ep.address = usb_endpoint_num(write_out);
     dev->write_ep.max_packet_size = usb_endpoint_maxp(write_out);
@@ -563,7 +466,7 @@ static int avic_usb_probe(struct usb_interface *intf,
         pr_err("write bulk max size too small");
 
         retval = -ENODEV;
-        goto cleanup_status_ep_buffer;
+        goto cleanup_candev;
     }
 
     dev->read_ep.address = usb_endpoint_num(read_in);
@@ -574,7 +477,7 @@ static int avic_usb_probe(struct usb_interface *intf,
         pr_err("read bulk max size too small");
 
         retval = -ENODEV;
-        goto cleanup_status_ep_buffer;
+        goto cleanup_candev;
     }
 
     /* Entangle the USB interface with the AVIC bridge device */
@@ -586,16 +489,11 @@ static int avic_usb_probe(struct usb_interface *intf,
     if (retval)
     {
         pr_err("could not register CAN device: %d\n", retval);
-        goto cleanup_status_ep_buffer;
+
+        goto cleanup_candev;
     }
 
-    return avic_usb_configure_peripheral(dev);
-
-cleanup_status_ep_buffer:
-    kfree(dev->status_ep.buffer);
-
-    // cleanup_status_ep:
-    usb_free_urb(dev->status_ep.urb);
+    return avic_can_configure_peripheral(dev);
 
 cleanup_candev:
     free_candev(netdev);
@@ -616,19 +514,13 @@ static void avic_usb_disconnect(struct usb_interface *intf)
 
     if (dev)
     {
-        usb_unlink_urb(dev->status_ep.urb);
-
-        kfree(dev->status_ep.buffer);
-
-        usb_free_urb(dev->status_ep.urb);
-
         unregister_candev(dev->netdev);
 
         free_candev(dev->netdev);
     }
 }
 
-/* Table of devices that work with the AVIC bridge driver. */
+/* Table of devices that work with the AVIC CAN driver. */
 static struct usb_device_id avic_usb_table[] = {
     {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID,
                                    AVIC_BRIDGE_PRODUCT_ID,
