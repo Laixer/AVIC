@@ -28,13 +28,6 @@
 
 static struct usb_driver avic_usb_driver;
 
-struct avic_usb_tx_urb_context
-{
-    struct avic_bridge *dev;
-    unsigned int is_free;
-    unsigned int index;
-};
-
 struct avic_control_bridge
 {
     struct usb_device *udev;
@@ -478,8 +471,7 @@ static int avic_usb_probe(struct usb_interface *intf,
 
     /*
      * Look for the interrupt status endpoint in the current interface
-     * descriptor. This endpoint *must* exist otherwise we're uncertain
-     * about the AVIC bridge configuration.
+     * descriptor. This endpoint *must* exist in this interface.
      */
     retval = usb_find_int_in_endpoint(intf->cur_altsetting, &status_in);
     if (retval)
@@ -551,20 +543,17 @@ static void avic_usb_disconnect(struct usb_interface *intf)
     {
         del_timer(&clock_sync_timer.timer);
 
-        /* Return minor to control class */
         usb_deregister_dev(intf, &avic_ctrl_class);
 
         usb_unlink_urb(dev->status_ep.urb);
-
         kfree(dev->status_ep.buffer);
-
         usb_free_urb(dev->status_ep.urb);
 
         kfree(dev);
     }
 }
 
-/* Table of devices that work with the AVIC bridge driver. */
+/* Table of devices that work with the AVIC control driver. */
 static struct usb_device_id avic_usb_table[] = {
     {USB_DEVICE_AND_INTERFACE_INFO(AVIC_BRIDGE_VENDOR_ID,
                                    AVIC_BRIDGE_PRODUCT_ID,
