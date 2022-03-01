@@ -14,6 +14,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/usb.h>
@@ -115,7 +116,11 @@ static void avic_usb_write_bulk_callback(struct urb *urb)
     netdev->stats.tx_packets++;
     netdev->stats.tx_bytes += urb->actual_length;
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
+    can_get_echo_skb(netdev, context->index);
+#else
     can_get_echo_skb(netdev, context->index, NULL);
+#endif
 
     context->is_free = 1;
 
@@ -203,7 +208,11 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
     usb_anchor_urb(urb, &dev->tx_submitted);
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
+    can_put_echo_skb(skb, netdev, context->index);
+#else
     can_put_echo_skb(skb, netdev, context->index, 0);
+#endif
 
     /* send the data out the bulk port */
     retval = usb_submit_urb(urb, GFP_ATOMIC);
@@ -332,8 +341,11 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
         return;
     }
 
-    frame->can_id = avic_frame->id;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
+    frame->can_dlc = avic_frame->len;
+#else
     frame->len = avic_frame->len;
+#endif
     memcpy(frame->data, avic_frame->data, avic_frame->len);
 
     /* At this point the receive was a success so update the stats */
