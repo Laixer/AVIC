@@ -9,6 +9,8 @@
 // TODO:
 // - More read buffers
 // - Locking
+// - Extended frame
+// - Set bit timing
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
