@@ -187,6 +187,15 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
         usb_free_coherent(dev->udev, dev->write_ep.max_packet_size, buf, urb->transfer_dma);
         usb_free_urb(urb);
 
+        /*
+         * All slots are in-flight which is unusual even on high throughput connections. If we
+         * signal a busy status to netdev it will keep retrying to send the same packet after awhile.
+         *
+         * Slow down the network interface by stopping the TX queue. Any consecutive callback will wake
+         * the TX queue. This is an effective way to implement flow control.
+         */
+        netif_stop_queue(netdev);
+
         netdev->stats.tx_dropped++;
         return NETDEV_TX_BUSY;
     }
