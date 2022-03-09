@@ -163,17 +163,6 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     /* Convert the canfd_frame into an avic_frame */
     avic_frame = (struct avic_frame *)buf;
     avic_frame->type = AVIC_FRAME_TYPE_CAN_FD;
-
-    if (frame->can_id & CAN_RTR_FLAG)
-    {
-        // avic_frame->flags |= USB_8DEV_RTR;
-    }
-
-    if (frame->can_id & CAN_EFF_FLAG)
-    {
-        // avic_frame->flags |= USB_8DEV_EXTID;
-    }
-
     avic_frame->id = frame->can_id;
     avic_frame->port = AVIC_PORT_DEFAULT;
     avic_frame->len = frame->len;
