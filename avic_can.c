@@ -7,9 +7,7 @@
  */
 
 // TODO:
-// - More read buffers
 // - Locking
-// - Extended frame
 // - Set bit timing
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -70,6 +68,9 @@ struct avic_bridge
     struct avic_usb_endpoint_info read_ep;
 
     struct avic_usb_tx_urb_context tx_context[TX_MAX_CONTENT_SLOTS];
+
+    void *rxbuf[RX_MAX_CONTENT_SLOTS];
+    dma_addr_t rxbuf_dma[RX_MAX_CONTENT_SLOTS];
 };
 
 /* AVIC frame which carries the payload. */
@@ -238,6 +239,141 @@ cleanup_urb:
     return retval;
 }
 
+static void avic_usb_read_bulk_callback(struct urb *urb)
+{
+    struct avic_bridge *dev = urb->context;
+    struct net_device *netdev = dev->netdev;
+    struct avic_frame *avic_frame = NULL;
+    struct can_frame *frame = NULL;
+    struct sk_buff *skb = NULL;
+    int retval = 0;
+
+    if (!netif_device_present(netdev))
+    {
+        return;
+    }
+
+    switch (urb->status)
+    {
+    case 0: /* success */
+        break;
+
+    case -ECONNRESET: /* unlink */
+    case -ENOENT:
+    case -EPIPE:
+    case -EPROTO:
+    case -ESHUTDOWN:
+        return;
+
+    default:
+        pr_warn("rx bulk aborted: %d\n", urb->status);
+        return;
+    }
+
+    avic_frame = (struct avic_frame *)urb->transfer_buffer;
+
+    skb = alloc_can_skb(netdev, &frame);
+    if (!skb)
+    {
+        pr_err("alloc_can_skb failed\n");
+        return;
+    }
+
+    frame->can_id = avic_frame->id;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
+    frame->can_dlc = avic_frame->len;
+#else
+    frame->len = avic_frame->len;
+#endif
+    memcpy(frame->data, avic_frame->data, avic_frame->len);
+
+    /* At this point the receive was a success so update the stats */
+    netdev->stats.rx_packets++;
+    netdev->stats.rx_bytes += urb->actual_length;
+
+    netif_rx(skb);
+
+    usb_fill_bulk_urb(urb, dev->udev,
+                      usb_rcvbulkpipe(dev->udev, dev->read_ep.address),
+                      urb->transfer_buffer, dev->read_ep.max_packet_size,
+                      avic_usb_read_bulk_callback, dev);
+    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+    usb_anchor_urb(urb, &dev->rx_submitted);
+
+    retval = usb_submit_urb(urb, GFP_KERNEL);
+    if (unlikely(retval))
+    {
+        pr_err("usb_submit_urb failed: %d\n", retval);
+    }
+}
+
+static int avic_can_netif_init(struct net_device *netdev)
+{
+    struct avic_bridge *dev = netdev_priv(netdev);
+    struct urb *urb = NULL;
+    u8 *buf = NULL;
+    int i = 0;
+    int retval = -ENOMEM;
+
+    for (i = 0; i < RX_MAX_CONTENT_SLOTS; ++i)
+    {
+        // TODO: Move to setup. We need to release this in the discon.
+        urb = usb_alloc_urb(0, GFP_ATOMIC);
+        if (!urb)
+        {
+            break;
+        }
+
+        // TODO: Move to setup. We need to release this in the discon.
+        buf = usb_alloc_coherent(dev->udev, dev->read_ep.max_packet_size, GFP_ATOMIC, &urb->transfer_dma);
+        if (!buf)
+        {
+            netdev_err(netdev, "no memory left for USB buffer\n");
+            usb_free_urb(urb);
+            break;
+        }
+
+        usb_fill_bulk_urb(urb, dev->udev,
+                          usb_rcvbulkpipe(dev->udev, dev->read_ep.address),
+                          buf, dev->read_ep.max_packet_size,
+                          avic_usb_read_bulk_callback, dev);
+        urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+        usb_anchor_urb(urb, &dev->rx_submitted);
+
+        retval = usb_submit_urb(urb, GFP_ATOMIC);
+        if (unlikely(retval))
+        {
+            netdev_err(netdev, "usb_submit_urb failed: %d\n", retval);
+
+            usb_unanchor_urb(urb);
+            usb_free_coherent(dev->udev, dev->read_ep.max_packet_size, buf, urb->transfer_dma);
+            usb_free_urb(urb);
+            break;
+        }
+
+        dev->rxbuf[i] = buf;
+        dev->rxbuf_dma[i] = urb->transfer_dma;
+
+        /* Drop reference, USB core will take care of freeing it */
+        usb_free_urb(urb);
+    }
+
+    /* If we did not submit any URBs then exit */
+    if (i == 0)
+    {
+        netdev_err(netdev, "could not setup RX URBs\n");
+        return retval;
+    }
+
+    /* Warn if we couldn't transmit all the URBs */
+    if (i < RX_MAX_CONTENT_SLOTS)
+    {
+        netdev_warn(netdev, "clould not register all RX URBs\n");
+    }
+
+    return 0;
+}
+
 static int avic_can_open(struct net_device *netdev)
 {
     int err = open_candev(netdev);
@@ -246,16 +382,46 @@ static int avic_can_open(struct net_device *netdev)
         return err;
     }
 
+    netdev_info(netdev, "open device");
+
+    avic_can_netif_init(netdev);
+
     /* Accept packets on the network queue */
     netif_start_queue(netdev);
 
     return 0;
 }
 
+static void avic_can_netif_deinit(struct net_device *netdev)
+{
+    struct avic_bridge *dev = netdev_priv(netdev);
+    int i = 0;
+
+    usb_kill_anchored_urbs(&dev->rx_submitted);
+
+    for (i = 0; i < RX_MAX_CONTENT_SLOTS; ++i)
+    {
+        usb_free_coherent(dev->udev, dev->read_ep.max_packet_size,
+                          dev->rxbuf[i], dev->rxbuf_dma[i]);
+    }
+
+    usb_kill_anchored_urbs(&dev->tx_submitted);
+    // atomic_set(&priv->active_tx_urbs, 0);
+
+    for (i = 0; i < TX_MAX_CONTENT_SLOTS; ++i)
+    {
+        dev->tx_context[i].is_free = 1;
+    }
+}
+
 static int avic_can_close(struct net_device *netdev)
 {
     /* We'll no longer accept new packets */
     netif_stop_queue(netdev);
+
+    netdev_info(netdev, "close device");
+
+    avic_can_netif_deinit(netdev);
 
     close_candev(netdev);
 
@@ -299,122 +465,6 @@ static int avic_can_set_bittiming(struct net_device *netdev)
 {
     /* TODO: Send the bittime change to the AVIC */
     return 0;
-}
-
-static void avic_usb_read_bulk_callback(struct urb *urb)
-{
-    struct avic_bridge *dev = urb->context;
-    struct net_device *netdev = dev->netdev;
-    struct avic_frame *avic_frame = NULL;
-    struct can_frame *frame = NULL;
-    struct sk_buff *skb = NULL;
-    int retval = 0;
-
-    if (!netif_device_present(netdev))
-    {
-        return;
-    }
-
-    switch (urb->status)
-    {
-    case 0: /* success */
-        break;
-
-    case -ECONNRESET: /* unlink */
-    case -ENOENT:
-    case -EPIPE:
-    case -EPROTO:
-    case -ESHUTDOWN:
-        return;
-
-    default:
-        pr_warn("rx bulk aborted: %d\n", urb->status);
-        return;
-    }
-
-    avic_frame = (struct avic_frame *)urb->transfer_buffer;
-
-    skb = alloc_can_skb(netdev, &frame);
-    if (!skb)
-    {
-        pr_err("alloc_can_skb failed\n");
-        return;
-    }
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
-    frame->can_dlc = avic_frame->len;
-#else
-    frame->len = avic_frame->len;
-#endif
-    memcpy(frame->data, avic_frame->data, avic_frame->len);
-
-    /* At this point the receive was a success so update the stats */
-    netdev->stats.rx_packets++;
-    netdev->stats.rx_bytes += urb->actual_length;
-
-    netif_rx(skb);
-
-    usb_fill_bulk_urb(urb, dev->udev,
-                      usb_rcvbulkpipe(dev->udev, dev->read_ep.address),
-                      urb->transfer_buffer, dev->read_ep.max_packet_size,
-                      avic_usb_read_bulk_callback, dev);
-    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-    usb_anchor_urb(urb, &dev->rx_submitted);
-
-    retval = usb_submit_urb(urb, GFP_KERNEL);
-    if (unlikely(retval))
-    {
-        pr_err("usb_submit_urb failed: %d\n", retval);
-    }
-}
-
-static int avic_can_configure_peripheral(struct avic_bridge *dev)
-{
-    struct urb *urb = NULL;
-    u8 *buf = NULL;
-    int retval = -ENOMEM;
-
-    // TODO: Move to setup. We need to release this in the discon.
-    urb = usb_alloc_urb(0, GFP_ATOMIC);
-    if (!urb)
-    {
-        return retval;
-    }
-
-    // TODO: Move to setup. We need to release this in the discon.
-    buf = usb_alloc_coherent(dev->udev, dev->read_ep.max_packet_size, GFP_ATOMIC, &urb->transfer_dma);
-    if (!buf)
-    {
-        pr_err("no memory left for USB buffer\n");
-        goto cleanup_urb;
-    }
-
-    usb_fill_bulk_urb(urb, dev->udev,
-                      usb_rcvbulkpipe(dev->udev, dev->read_ep.address),
-                      buf, dev->read_ep.max_packet_size,
-                      avic_usb_read_bulk_callback, dev);
-    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-    usb_anchor_urb(urb, &dev->rx_submitted);
-
-    retval = usb_submit_urb(urb, GFP_ATOMIC);
-    if (unlikely(retval))
-    {
-        pr_err("usb_submit_urb failed: %d\n", retval);
-
-        goto cleanup_buffer;
-    }
-
-    usb_free_urb(urb);
-
-    return 0;
-
-cleanup_buffer:
-    usb_free_coherent(dev->udev, dev->read_ep.max_packet_size, buf, urb->transfer_dma);
-
-cleanup_urb:
-    usb_free_urb(urb);
-
-    return retval;
 }
 
 static int avic_usb_probe(struct usb_interface *intf,
@@ -507,7 +557,7 @@ static int avic_usb_probe(struct usb_interface *intf,
         goto cleanup_candev;
     }
 
-    return avic_can_configure_peripheral(dev);
+    return 0;
 
 cleanup_candev:
     free_candev(netdev);
