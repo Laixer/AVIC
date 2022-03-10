@@ -46,13 +46,6 @@
 
 #define CAN_PERIPHERAL_CLOCK 32000000
 
-struct avic_usb_tx_urb_context
-{
-    struct avic_bridge *dev;
-    unsigned int is_free;
-    unsigned int index;
-};
-
 struct avic_bridge
 {
     /* The can-dev module expects this member. */
@@ -61,13 +54,12 @@ struct avic_bridge
     struct usb_device *udev;
     struct net_device *netdev;
 
+    atomic_t tx_active;
     struct usb_anchor tx_submitted;
     struct usb_anchor rx_submitted;
 
     struct avic_usb_endpoint_info write_ep;
     struct avic_usb_endpoint_info read_ep;
-
-    struct avic_usb_tx_urb_context tx_context[TX_MAX_CONTENT_SLOTS];
 
     void *rxbuf[RX_MAX_CONTENT_SLOTS];
     dma_addr_t rxbuf_dma[RX_MAX_CONTENT_SLOTS];
@@ -85,8 +77,7 @@ struct avic_frame
 
 static void avic_usb_write_bulk_callback(struct urb *urb)
 {
-    struct avic_usb_tx_urb_context *context = urb->context;
-    struct avic_bridge *dev = context->dev;
+    struct avic_bridge *dev = urb->context;
     struct net_device *netdev = dev->netdev;
 
     /* Free the buffer as soon as possible */
@@ -119,13 +110,7 @@ static void avic_usb_write_bulk_callback(struct urb *urb)
     netdev->stats.tx_packets++;
     netdev->stats.tx_bytes += urb->actual_length;
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
-    can_get_echo_skb(netdev, context->index);
-#else
-    can_get_echo_skb(netdev, context->index, NULL);
-#endif
-
-    context->is_free = 1;
+    atomic_dec(&dev->tx_active);
 
     netif_wake_queue(netdev);
 }
@@ -136,9 +121,8 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     struct canfd_frame *frame = (struct canfd_frame *)skb->data;
     struct urb *urb = NULL;
     struct avic_frame *avic_frame = NULL;
-    struct avic_usb_tx_urb_context *context = NULL;
     u8 *buf = NULL;
-    int i = 0, retval = -ENOMEM;
+    int retval = -ENOMEM;
 
     /* Drop non-CAN frames */
     if (can_dropped_invalid_skb(netdev, skb))
@@ -171,24 +155,28 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     avic_frame->len = frame->len;
     memcpy(avic_frame->data, frame->data, frame->len);
 
-    for (i = 0; i < TX_MAX_CONTENT_SLOTS; ++i)
+    kfree_skb(skb);
+
+    usb_fill_bulk_urb(urb, dev->udev, usb_sndbulkpipe(dev->udev, dev->write_ep.address),
+                      buf, dev->write_ep.max_packet_size,
+                      avic_usb_write_bulk_callback, dev);
+    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+    usb_anchor_urb(urb, &dev->tx_submitted);
+
+    atomic_inc(&dev->tx_active);
+
+    /* Send the data out the bulk port */
+    retval = usb_submit_urb(urb, GFP_ATOMIC);
+    if (unlikely(retval))
     {
-        if (dev->tx_context[i].is_free)
-        {
-            context = &dev->tx_context[i];
-            context->dev = dev;
-            context->index = i;
-            context->is_free = 0;
-            break;
-        }
+        netdev_err(netdev, "usb_submit_urb failed: %d\n", retval);
+
+        goto cleanup_buffer;
     }
 
-    if (!context)
+    if (atomic_read(&dev->tx_active) >= TX_MAX_CONTENT_SLOTS)
     {
-        netdev_warn(netdev, "no available context slots\n");
-
-        usb_free_coherent(dev->udev, dev->write_ep.max_packet_size, buf, urb->transfer_dma);
-        usb_free_urb(urb);
+        netdev_warn(netdev, "periperal backpressure, slow down TX queue\n");
 
         /*
          * All slots are in-flight which is unusual even on high throughput connections. If we
@@ -198,30 +186,6 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
          * the TX queue. This is an effective way to implement flow control.
          */
         netif_stop_queue(netdev);
-
-        netdev->stats.tx_dropped++;
-        return NETDEV_TX_BUSY;
-    }
-
-    usb_fill_bulk_urb(urb, dev->udev, usb_sndbulkpipe(dev->udev, dev->write_ep.address),
-                      buf, dev->write_ep.max_packet_size,
-                      avic_usb_write_bulk_callback, context);
-    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-    usb_anchor_urb(urb, &dev->tx_submitted);
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 12, 0)
-    can_put_echo_skb(skb, netdev, context->index);
-#else
-    can_put_echo_skb(skb, netdev, context->index, 0);
-#endif
-
-    /* Send the data out the bulk port */
-    retval = usb_submit_urb(urb, GFP_ATOMIC);
-    if (unlikely(retval))
-    {
-        netdev_err(netdev, "usb_submit_urb failed: %d\n", retval);
-
-        goto cleanup_buffer;
     }
 
     usb_free_urb(urb);
@@ -394,7 +358,7 @@ static int avic_can_open(struct net_device *netdev)
     return 0;
 }
 
-static void avic_can_netif_deinit(struct net_device *netdev)
+static void avic_can_netif_reset(struct net_device *netdev)
 {
     struct avic_bridge *dev = netdev_priv(netdev);
     int i = 0;
@@ -408,12 +372,7 @@ static void avic_can_netif_deinit(struct net_device *netdev)
     }
 
     usb_kill_anchored_urbs(&dev->tx_submitted);
-    // atomic_set(&priv->active_tx_urbs, 0);
-
-    for (i = 0; i < TX_MAX_CONTENT_SLOTS; ++i)
-    {
-        dev->tx_context[i].is_free = 1;
-    }
+    atomic_set(&dev->tx_active, 0);
 }
 
 static int avic_can_close(struct net_device *netdev)
@@ -423,7 +382,7 @@ static int avic_can_close(struct net_device *netdev)
     /* We'll no longer accept new packets */
     netif_stop_queue(netdev);
 
-    avic_can_netif_deinit(netdev);
+    avic_can_netif_reset(netdev);
 
     close_candev(netdev);
 
@@ -480,7 +439,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     struct net_device *netdev = NULL;
     struct avic_bridge *dev = NULL;
     struct usb_endpoint_descriptor *read_in = NULL, *write_out = NULL;
-    int i = 0, retval = -ENOMEM;
+    int retval = -ENOMEM;
 
     pr_info("found AVIC CAN interface\n");
 
@@ -503,17 +462,11 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->can.do_set_mode = avic_can_set_mode;
     dev->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES;
 
+    atomic_set(&dev->tx_active, 0);
     init_usb_anchor(&dev->rx_submitted);
     init_usb_anchor(&dev->tx_submitted);
 
-    for (i = 0; i < TX_MAX_CONTENT_SLOTS; ++i)
-    {
-        dev->tx_context[i].is_free = 1;
-    }
-
     netdev->netdev_ops = &avic_can_netdev_ops;
-
-    netdev->flags |= IFF_ECHO; /* Local echo support */
 
     /*
      * Look for the bulk endpoints in the current interface
