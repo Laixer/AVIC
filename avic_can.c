@@ -111,7 +111,7 @@ static void avic_usb_write_bulk_callback(struct urb *urb)
         return;
 
     default:
-        pr_warn("tx bulk aborted: %d\n", urb->status);
+        netdev_warn(netdev, "tx bulk aborted: %d\n", urb->status);
         return;
     }
 
@@ -150,7 +150,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     urb = usb_alloc_urb(0, GFP_ATOMIC);
     if (!urb)
     {
-        pr_err("usb_alloc_urb failed");
+        netdev_err(netdev, "usb_alloc_urb failed");
         netdev->stats.tx_dropped++;
         return retval;
     }
@@ -158,7 +158,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     buf = usb_alloc_coherent(dev->udev, dev->write_ep.max_packet_size, GFP_ATOMIC, &urb->transfer_dma);
     if (!buf)
     {
-        pr_err("usb_alloc_coherent failed");
+        netdev_err(netdev, "usb_alloc_coherent failed");
 
         goto cleanup_urb;
     }
@@ -185,7 +185,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
 
     if (!context)
     {
-        pr_warn("no available context slots\n");
+        netdev_warn(netdev, "no available context slots\n");
 
         usb_free_coherent(dev->udev, dev->write_ep.max_packet_size, buf, urb->transfer_dma);
         usb_free_urb(urb);
@@ -219,7 +219,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     retval = usb_submit_urb(urb, GFP_ATOMIC);
     if (unlikely(retval))
     {
-        pr_err("usb_submit_urb failed: %d\n", retval);
+        netdev_err(netdev, "usb_submit_urb failed: %d\n", retval);
 
         goto cleanup_buffer;
     }
@@ -266,7 +266,7 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
         return;
 
     default:
-        pr_warn("rx bulk aborted: %d\n", urb->status);
+        netdev_warn(netdev, "rx bulk aborted: %d\n", urb->status);
         return;
     }
 
@@ -275,7 +275,7 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
     skb = alloc_can_skb(netdev, &frame);
     if (!skb)
     {
-        pr_err("alloc_can_skb failed\n");
+        netdev_err(netdev, "alloc_can_skb failed\n");
         return;
     }
 
@@ -303,7 +303,7 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
     retval = usb_submit_urb(urb, GFP_KERNEL);
     if (unlikely(retval))
     {
-        pr_err("usb_submit_urb failed: %d\n", retval);
+        netdev_err(netdev, "usb_submit_urb failed: %d\n", retval);
     }
 }
 
@@ -376,13 +376,15 @@ static int avic_can_netif_init(struct net_device *netdev)
 
 static int avic_can_open(struct net_device *netdev)
 {
-    int err = open_candev(netdev);
+    int err = 0;
+
+    netdev_info(netdev, "open device");
+
+    err = open_candev(netdev);
     if (err)
     {
         return err;
     }
-
-    netdev_info(netdev, "open device");
 
     avic_can_netif_init(netdev);
 
@@ -416,10 +418,10 @@ static void avic_can_netif_deinit(struct net_device *netdev)
 
 static int avic_can_close(struct net_device *netdev)
 {
+    netdev_info(netdev, "close device");
+
     /* We'll no longer accept new packets */
     netif_stop_queue(netdev);
-
-    netdev_info(netdev, "close device");
 
     avic_can_netif_deinit(netdev);
 
@@ -467,8 +469,13 @@ static int avic_can_set_bittiming(struct net_device *netdev)
     return 0;
 }
 
-static int avic_usb_probe(struct usb_interface *intf,
-                          const struct usb_device_id *id)
+/*
+ * Probe USB device and see if we can claim the interface.
+ *
+ * If the interface is compatible with AVIC CAN then probe the for endpoints and
+ * setup the network device.
+ */
+static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
     struct net_device *netdev = NULL;
     struct avic_bridge *dev = NULL;
@@ -480,7 +487,7 @@ static int avic_usb_probe(struct usb_interface *intf,
     netdev = alloc_candev(sizeof(struct avic_bridge), 32);
     if (!netdev)
     {
-        pr_err("could not allocate candev");
+        dev_err(&intf->dev, "could not allocate candev");
         return retval;
     }
 
@@ -518,7 +525,7 @@ static int avic_usb_probe(struct usb_interface *intf,
                                        NULL, NULL);
     if (retval)
     {
-        pr_err("did not find bulk endpoints\n");
+        dev_err(&intf->dev, "did not find bulk endpoints\n");
         goto cleanup_candev;
     }
 
@@ -527,7 +534,7 @@ static int avic_usb_probe(struct usb_interface *intf,
 
     if (dev->write_ep.max_packet_size < MIN_BULK_PACKET_SIZE)
     {
-        pr_err("write bulk max size too small");
+        dev_err(&intf->dev, "write bulk max size too small");
 
         retval = -ENODEV;
         goto cleanup_candev;
@@ -538,7 +545,7 @@ static int avic_usb_probe(struct usb_interface *intf,
 
     if (dev->read_ep.max_packet_size < MIN_BULK_PACKET_SIZE)
     {
-        pr_err("read bulk max size too small");
+        dev_err(&intf->dev, "read bulk max size too small");
 
         retval = -ENODEV;
         goto cleanup_candev;
@@ -552,7 +559,7 @@ static int avic_usb_probe(struct usb_interface *intf,
     retval = register_candev(netdev);
     if (retval)
     {
-        pr_err("could not register CAN device: %d\n", retval);
+        dev_err(&intf->dev, "could not register CAN device: %d\n", retval);
 
         goto cleanup_candev;
     }
