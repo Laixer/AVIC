@@ -7,7 +7,6 @@
  */
 
 // TODO:
-// - Locking
 // - Set bit timing
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -25,26 +24,20 @@
 /* Driver identifier */
 #define DRV_NAME "avic_can"
 
-/* USB interrupt requests */
-#define USB_REQ_DUMP_INFO 2     /* Request info dump to console output. */
-#define USB_REQ_SYNC_CLOCK 7    /* Clock synchronization request. */
-#define USB_REQ_SYSTEM_RESET 9  /* System reset request. */
-#define USB_REQ_HALT_MOTION 128 /* Halt all motor functions. */
-
 /* AVIC frame default port. Can change in the future */
 #define AVIC_PORT_DEFAULT 0
 
 /* AVIC frame types */
-#define AVIC_FRAME_TYPE_CAN 0x8       /* CAN bus frame */
-#define AVIC_FRAME_TYPE_CAN_FD 0x9    /* CAN FD bus frame */
-#define AVIC_FRAME_TYPE_ETHERNET 0x11 /* Ethernet frame */
+#define AVIC_FRAME_TYPE_CAN 0x8    /* CAN bus frame */
+#define AVIC_FRAME_TYPE_CAN_FD 0x9 /* CAN FD bus frame */
 
 #define TX_MAX_CONTENT_SLOTS 32
 #define RX_MAX_CONTENT_SLOTS 32
 
 #define MIN_BULK_PACKET_SIZE 64
 
-#define CAN_PERIPHERAL_CLOCK 32000000
+/* AVIC device CAN clock */
+#define AVIC_USB_ABP_CLOCK 32000000
 
 struct avic_bridge
 {
@@ -456,7 +449,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->netdev = netdev;
 
     dev->can.state = CAN_STATE_STOPPED;
-    dev->can.clock.freq = CAN_PERIPHERAL_CLOCK;
+    dev->can.clock.freq = AVIC_USB_ABP_CLOCK;
     dev->can.bittiming_const = &avic_can_bittiming_const;
     dev->can.do_set_bittiming = avic_can_set_bittiming;
     dev->can.do_set_mode = avic_can_set_mode;
