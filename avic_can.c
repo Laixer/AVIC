@@ -46,6 +46,8 @@
 
 #define MIN_BULK_PACKET_SIZE 64
 
+#define CAN_PERIPHERAL_CLOCK 32000000
+
 struct avic_usb_tx_urb_context
 {
     struct avic_bridge *dev;
@@ -212,7 +214,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     can_put_echo_skb(skb, netdev, context->index, 0);
 #endif
 
-    /* send the data out the bulk port */
+    /* Send the data out the bulk port */
     retval = usb_submit_urb(urb, GFP_ATOMIC);
     if (unlikely(retval))
     {
@@ -438,7 +440,7 @@ static int avic_usb_probe(struct usb_interface *intf,
     dev->netdev = netdev;
 
     dev->can.state = CAN_STATE_STOPPED;
-    dev->can.clock.freq = 8000000; // TODO: define
+    dev->can.clock.freq = CAN_PERIPHERAL_CLOCK;
     dev->can.bittiming_const = &avic_can_bittiming_const;
     dev->can.do_set_bittiming = avic_can_set_bittiming;
     dev->can.do_set_mode = avic_can_set_mode;
