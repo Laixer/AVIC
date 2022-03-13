@@ -336,9 +336,9 @@ static int avic_can_netif_init(struct net_device *netdev)
 }
 
 /*
- * Open the network interface.
+ * Open the network device.
  *
- * This method is called when the network interface is opened for the first time.
+ * This function is called when the network device transitions to the up state.
  * It will initialize the RX buffers and activate the TX queue.
  */
 static int avic_can_open(struct net_device *netdev)
@@ -380,6 +380,12 @@ static void avic_can_netif_reset(struct net_device *netdev)
     atomic_set(&dev->tx_active, 0);
 }
 
+/*
+ * Close the network device.
+ *
+ * This function is called when a network device transitions to the down state.
+ * It will free resources and stop the TX queue.
+ */
 static int avic_can_close(struct net_device *netdev)
 {
     netdev_info(netdev, "close device");
