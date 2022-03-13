@@ -103,6 +103,8 @@ static void avic_usb_write_bulk_callback(struct urb *urb)
     netdev->stats.tx_packets++;
     netdev->stats.tx_bytes += urb->actual_length;
 
+    can_led_event(netdev, CAN_LED_EVENT_TX);
+
     atomic_dec(&dev->tx_active);
 
     netif_wake_queue(netdev);
@@ -250,6 +252,8 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
 
     netif_rx(skb);
 
+    can_led_event(netdev, CAN_LED_EVENT_RX);
+
     usb_fill_bulk_urb(urb, dev->udev,
                       usb_rcvbulkpipe(dev->udev, dev->read_ep.address),
                       urb->transfer_buffer, dev->read_ep.max_packet_size,
@@ -331,6 +335,12 @@ static int avic_can_netif_init(struct net_device *netdev)
     return 0;
 }
 
+/*
+ * Open the network interface.
+ *
+ * This method is called when the network interface is opened for the first time.
+ * It will initialize the RX buffers and activate the TX queue.
+ */
 static int avic_can_open(struct net_device *netdev)
 {
     int err = 0;
@@ -342,6 +352,8 @@ static int avic_can_open(struct net_device *netdev)
     {
         return err;
     }
+
+    can_led_event(netdev, CAN_LED_EVENT_OPEN);
 
     avic_can_netif_init(netdev);
 
@@ -378,6 +390,8 @@ static int avic_can_close(struct net_device *netdev)
     avic_can_netif_reset(netdev);
 
     close_candev(netdev);
+
+    can_led_event(netdev, CAN_LED_EVENT_STOP);
 
     return 0;
 }
