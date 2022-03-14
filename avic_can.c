@@ -24,9 +24,6 @@
 /* Driver identifier */
 #define DRV_NAME "avic_can"
 
-/* AVIC frame default port. Can change in the future */
-#define AVIC_PORT_DEFAULT 0
-
 /* AVIC frame types */
 #define AVIC_FRAME_TYPE_CAN 0x8    /* CAN bus frame */
 #define AVIC_FRAME_TYPE_CAN_FD 0x9 /* CAN FD bus frame */
@@ -63,7 +60,6 @@ struct avic_frame
 {
     __u8 type;     /* Frame type */
     __u32 id;      /* Source address */
-    __u8 port;     /* AVIC port */
     __u8 len;      /* Payload length */
     __u8 data[48]; /* Payload */
 } __attribute__((packed));
@@ -146,7 +142,6 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     avic_frame = (struct avic_frame *)buf;
     avic_frame->type = AVIC_FRAME_TYPE_CAN_FD;
     avic_frame->id = frame->can_id;
-    avic_frame->port = AVIC_PORT_DEFAULT;
     avic_frame->len = frame->len;
     memcpy(avic_frame->data, frame->data, frame->len);
 
@@ -421,20 +416,6 @@ static const struct can_bittiming_const avic_can_bittiming_const = {
     .brp_inc = 1,
 };
 
-static int avic_can_set_mode(struct net_device *netdev, enum can_mode mode)
-{
-    switch (mode)
-    {
-    case CAN_MODE_START:
-        break;
-
-    default:
-        return -EOPNOTSUPP;
-    }
-
-    return 0;
-}
-
 static int avic_can_set_bittiming(struct net_device *netdev)
 {
     /* TODO: Send the bittime change to the AVIC */
@@ -472,7 +453,6 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->can.clock.freq = AVIC_USB_ABP_CLOCK;
     dev->can.bittiming_const = &avic_can_bittiming_const;
     dev->can.do_set_bittiming = avic_can_set_bittiming;
-    dev->can.do_set_mode = avic_can_set_mode;
     dev->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES;
 
     atomic_set(&dev->tx_active, 0);

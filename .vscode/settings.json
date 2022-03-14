@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "module.h": "c",
+        "netdevice.h": "c",
+        "can.h": "c"
+    }
+}
