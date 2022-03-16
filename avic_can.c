@@ -28,13 +28,14 @@
 #define AVIC_FRAME_TYPE_CAN 0x8    /* CAN bus frame */
 #define AVIC_FRAME_TYPE_CAN_FD 0x9 /* CAN FD bus frame */
 
-#define TX_MAX_CONTENT_SLOTS 32
-#define RX_MAX_CONTENT_SLOTS 32
+/* Buffer sizes*/
+#define TX_MAX_CONTENT_SLOTS 32 /* Maximum TX slots */
+#define RX_MAX_CONTENT_SLOTS 32 /* Maximum RX slots */
 
-#define MIN_BULK_PACKET_SIZE 64
+#define MIN_BULK_PACKET_SIZE 64 /* Minimum endpoint packet size */
 
-/* AVIC device CAN clock */
-#define AVIC_USB_ABP_CLOCK 32000000
+/* Peripheral settings */
+#define AVIC_USB_ABP_CLOCK 32000000 /* AVIC device CAN clock */
 
 struct avic_bridge
 {
@@ -138,13 +139,21 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
         goto cleanup_urb;
     }
 
-    /* Convert the canfd_frame into an avic_frame */
+    /*
+     * Convert the canfd_frame into an avic_frame.
+     *
+     * The Linux kernel uses the CAN_EFF_FLAG flag to indicate the frame ID type. This
+     * can be either a standard or extended frame ID. The peripheral tests for the same
+     * flag before the frame is put on the queue. Therefore avic_frame.can_id can be
+     * passed straight through over the USB channel.
+     */
     avic_frame = (struct avic_frame *)buf;
     avic_frame->type = AVIC_FRAME_TYPE_CAN_FD;
     avic_frame->id = frame->can_id;
     avic_frame->len = frame->len;
     memcpy(avic_frame->data, frame->data, frame->len);
 
+    /* Release the packet from the network queue */
     kfree_skb(skb);
 
     usb_fill_bulk_urb(urb, dev->udev, usb_sndbulkpipe(dev->udev, dev->write_ep.address),
@@ -193,6 +202,11 @@ cleanup_urb:
     return retval;
 }
 
+/*
+ * This function is called after an RX URB finished.
+ *
+ * The URB is resubmitted at the end and will wait for the next packet to arrive.
+ */
 static void avic_usb_read_bulk_callback(struct urb *urb)
 {
     struct avic_bridge *dev = urb->context;
@@ -245,6 +259,7 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
     netdev->stats.rx_packets++;
     netdev->stats.rx_bytes += urb->actual_length;
 
+    /* Put the packet on the network queue */
     netif_rx(skb);
 
     can_led_event(netdev, CAN_LED_EVENT_RX);
@@ -358,6 +373,12 @@ static int avic_can_open(struct net_device *netdev)
     return 0;
 }
 
+/*
+ * Reset network interface.
+ *
+ * Cancel the pending RX and TX URBs, free resources and reset the counters.
+ * The network interface can be restarted after this function is called.
+ */
 static void avic_can_netif_reset(struct net_device *netdev)
 {
     struct avic_bridge *dev = netdev_priv(netdev);
@@ -435,7 +456,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     struct usb_endpoint_descriptor *read_in = NULL, *write_out = NULL;
     int retval = -ENOMEM;
 
-    pr_info("found AVIC CAN interface\n");
+    pr_info("AVIC CAN interface candidate\n");
 
     netdev = alloc_candev(sizeof(struct avic_bridge), 32);
     if (!netdev)
@@ -509,6 +530,8 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
 
         goto cleanup_candev;
     }
+
+    netdev_info(netdev, "registered new network device");
 
     return 0;
 
