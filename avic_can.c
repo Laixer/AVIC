@@ -34,9 +34,6 @@
 
 #define MIN_BULK_PACKET_SIZE 64 /* Minimum endpoint packet size */
 
-/* Peripheral settings */
-#define AVIC_USB_ABP_CLOCK 32000000 /* AVIC device CAN clock */
-
 struct avic_bridge
 {
     /* The can-dev module expects this member. */
@@ -64,6 +61,9 @@ struct avic_frame
     __u8 len;      /* Payload length */
     __u8 data[48]; /* Payload */
 } __attribute__((packed));
+
+static const __u32 avic_can_bitrate[] = {50000, 100000, 125000,
+                                         250000, 500000, 1000000};
 
 static void avic_usb_write_bulk_callback(struct urb *urb)
 {
@@ -425,20 +425,12 @@ static const struct net_device_ops avic_can_netdev_ops = {
     .ndo_change_mtu = can_change_mtu,
 };
 
-static const struct can_bittiming_const avic_can_bittiming_const = {
-    .name = "avic_can",
-    .tseg1_min = 1,
-    .tseg1_max = 16,
-    .tseg2_min = 1,
-    .tseg2_max = 8,
-    .sjw_max = 4,
-    .brp_min = 1,
-    .brp_max = 64,
-    .brp_inc = 1,
-};
-
 static int avic_can_set_bittiming(struct net_device *netdev)
 {
+    struct avic_bridge *dev = netdev_priv(netdev);
+
+    netdev_info(netdev, "set peripheral bitrate to: %d", dev->can.bittiming.bitrate);
+
     /* TODO: Send the bittime change to the AVIC */
     return 0;
 }
@@ -471,8 +463,8 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->netdev = netdev;
 
     dev->can.state = CAN_STATE_STOPPED;
-    dev->can.clock.freq = AVIC_USB_ABP_CLOCK;
-    dev->can.bittiming_const = &avic_can_bittiming_const;
+    dev->can.bitrate_const = avic_can_bitrate;
+    dev->can.bitrate_const_cnt = ARRAY_SIZE(avic_can_bitrate);
     dev->can.do_set_bittiming = avic_can_set_bittiming;
     dev->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES;
 
