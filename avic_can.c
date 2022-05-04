@@ -34,6 +34,9 @@
 
 #define MIN_BULK_PACKET_SIZE 64 /* Minimum endpoint packet size */
 
+#define AVIC_CAN_TERMINATION_DISABLED CAN_TERMINATION_DISABLED
+#define AVIC_CAN_TERMINATION_ENABLED 120
+
 struct avic_bridge
 {
     /* The can-dev module expects this member. */
@@ -61,6 +64,9 @@ struct avic_frame
     __u8 len;      /* Payload length */
     __u8 data[48]; /* Payload */
 } __attribute__((packed));
+
+static const __u16 avic_can_termination[] = {AVIC_CAN_TERMINATION_DISABLED,
+                                             AVIC_CAN_TERMINATION_ENABLED};
 
 static const __u32 avic_can_bitrate[] = {50000, 100000, 125000,
                                          250000, 500000, 1000000};
@@ -425,6 +431,23 @@ static const struct net_device_ops avic_can_netdev_ops = {
     .ndo_change_mtu = can_change_mtu,
 };
 
+static int avic_can_set_termination(struct net_device *netdev, __u16 termination)
+{
+    // struct avic_bridge *dev = netdev_priv(netdev);
+
+    if (termination == AVIC_CAN_TERMINATION_ENABLED)
+    {
+        netdev_info(netdev, "enable line termination");
+    }
+    else
+    {
+        netdev_info(netdev, "disable line termination");
+    }
+
+    /* TODO: Send the termination change to the AVIC */
+    return 0;
+}
+
 static int avic_can_set_bittiming(struct net_device *netdev)
 {
     struct avic_bridge *dev = netdev_priv(netdev);
@@ -463,8 +486,11 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->netdev = netdev;
 
     dev->can.state = CAN_STATE_STOPPED;
+    dev->can.termination_const = avic_can_termination;
+    dev->can.termination_const_cnt = ARRAY_SIZE(avic_can_termination);
     dev->can.bitrate_const = avic_can_bitrate;
     dev->can.bitrate_const_cnt = ARRAY_SIZE(avic_can_bitrate);
+    dev->can.do_set_termination = avic_can_set_termination;
     dev->can.do_set_bittiming = avic_can_set_bittiming;
     dev->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES;
 
