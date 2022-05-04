@@ -56,6 +56,13 @@ struct avic_bridge
     dma_addr_t rxbuf_dma[RX_MAX_CONTENT_SLOTS];
 };
 
+/* USB CAN requests. */
+enum avic_can_request_type
+{
+    USB_CAN_REQ_SET_BITTIMING = 5,   /* Set CAN bit timing. */
+    USB_CAN_REQ_SET_TERMINATION = 6, /* Set CAN line termination resistance. */
+};
+
 /* AVIC frame which carries the payload. */
 struct avic_frame
 {
@@ -433,28 +440,50 @@ static const struct net_device_ops avic_can_netdev_ops = {
 
 static int avic_can_set_termination(struct net_device *netdev, __u16 termination)
 {
-    // struct avic_bridge *dev = netdev_priv(netdev);
+    struct avic_bridge *dev = netdev_priv(netdev);
+    __u8 term_resistance = 0;
+    int retval = 0;
 
     if (termination == AVIC_CAN_TERMINATION_ENABLED)
     {
         netdev_info(netdev, "enable line termination");
+        term_resistance = 120;
     }
     else
     {
         netdev_info(netdev, "disable line termination");
     }
 
-    /* TODO: Send the termination change to the AVIC */
+    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
+                             USB_CAN_REQ_SET_TERMINATION, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0, 0,
+                             &term_resistance, sizeof(__u8), USB_CTRL_SET_TIMEOUT);
+    if (unlikely(retval < 0))
+    {
+        pr_warn("usb_control_msg failed: %d\n", retval);
+
+        return retval;
+    }
+
     return 0;
 }
 
 static int avic_can_set_bittiming(struct net_device *netdev)
 {
     struct avic_bridge *dev = netdev_priv(netdev);
+    int retval = 0;
 
     netdev_info(netdev, "set peripheral bitrate to: %d", dev->can.bittiming.bitrate);
 
-    /* TODO: Send the bittime change to the AVIC */
+    retval = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, AVIC_USB_CONTROL_ENDPOINT_ADDRESS),
+                             USB_CAN_REQ_SET_BITTIMING, USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0, 0,
+                             &dev->can.bittiming.bitrate, sizeof(__u32), USB_CTRL_SET_TIMEOUT);
+    if (unlikely(retval < 0))
+    {
+        pr_warn("usb_control_msg failed: %d\n", retval);
+
+        return retval;
+    }
+
     return 0;
 }
 
