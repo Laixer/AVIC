@@ -9,7 +9,7 @@ clean:
 install:
 	 $(MAKE) -C $(KDIR) M=$(PWD) modules_install
 
-dkms:
+install_dkms:
 	mkdir /usr/src/avic-can-1.0.0/
 	cp -r . /usr/src/avic-can-1.0.0/
 	dkms add -m avic-can/1.0.0
