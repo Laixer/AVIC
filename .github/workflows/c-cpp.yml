@@ -14,9 +14,9 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - run: sudo apt-get install linux-headers-$(uname -r)
+#     - run: sudo apt-get install linux-headers-$(uname -r)
     
 #     - name: configure
 #       run: ./configure
-#     - name: make
-#       run: make
+    - name: make
+      run: make
