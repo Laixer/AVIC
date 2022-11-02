@@ -1,4 +1,4 @@
-name: C/C++ CI
+name: C/C++
 
 on:
   push:
@@ -8,15 +8,12 @@ on:
 
 jobs:
   build:
-
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    
-#     - run: sudo apt-get install linux-headers-$(uname -r)
-    
-#     - name: configure
-#       run: ./configure
-    - name: make
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Make
       run: make
