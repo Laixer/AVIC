@@ -3,11 +3,8 @@
  * AVIC CAN driver.
  *
  * Copyright (C) 2021-2022 Yorick de Wid (yorick@laixer.com)
- * Copyright (C) 2021-2022 Laixer Equipment B.V.
+ * Copyright (C) 2021-2023 Laixer Equipment B.V.
  */
-
-// TODO:
-// - Set bit timing
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -135,7 +132,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     }
 
     urb = usb_alloc_urb(0, GFP_ATOMIC);
-    if (!urb)
+    if (unlikely(!urb))
     {
         netdev_err(netdev, "usb_alloc_urb failed");
         netdev->stats.tx_dropped++;
@@ -143,7 +140,7 @@ static netdev_tx_t avic_can_start_xmit(struct sk_buff *skb, struct net_device *n
     }
 
     buf = usb_alloc_coherent(dev->udev, dev->write_ep.max_packet_size, GFP_ATOMIC, &urb->transfer_dma);
-    if (!buf)
+    if (unlikely(!buf))
     {
         netdev_err(netdev, "usb_alloc_coherent failed");
 
@@ -227,7 +224,7 @@ static void avic_usb_read_bulk_callback(struct urb *urb)
     struct sk_buff *skb = NULL;
     int retval = 0;
 
-    if (!netif_device_present(netdev))
+    if (unlikely(!netif_device_present(netdev)))
     {
         return;
     }
@@ -299,14 +296,14 @@ static int avic_can_netif_init(struct net_device *netdev)
     {
         // TODO: Move to setup. We need to release this in the discon.
         urb = usb_alloc_urb(0, GFP_ATOMIC);
-        if (!urb)
+        if (unlikely(!urb))
         {
             break;
         }
 
         // TODO: Move to setup. We need to release this in the discon.
         buf = usb_alloc_coherent(dev->udev, dev->read_ep.max_packet_size, GFP_ATOMIC, &urb->transfer_dma);
-        if (!buf)
+        if (unlikely(!buf))
         {
             netdev_err(netdev, "no memory left for USB buffer\n");
             usb_free_urb(urb);
@@ -367,7 +364,7 @@ static int avic_can_open(struct net_device *netdev)
     netdev_info(netdev, "open device");
 
     err = open_candev(netdev);
-    if (err)
+    if (unlikely(err))
     {
         return err;
     }
@@ -495,7 +492,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     pr_info("AVIC CAN interface candidate\n");
 
     netdev = alloc_candev(sizeof(struct avic_bridge), 32);
-    if (!netdev)
+    if (unlikely(!netdev))
     {
         dev_err(&intf->dev, "could not allocate candev");
         return retval;
@@ -529,7 +526,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
                                        &read_in,
                                        &write_out,
                                        NULL, NULL);
-    if (retval)
+    if (unlikely(retval))
     {
         dev_err(&intf->dev, "did not find bulk endpoints\n");
         goto cleanup_candev;
@@ -538,7 +535,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->write_ep.address = usb_endpoint_num(write_out);
     dev->write_ep.max_packet_size = usb_endpoint_maxp(write_out);
 
-    if (dev->write_ep.max_packet_size < MIN_BULK_PACKET_SIZE)
+    if (unlikely(dev->write_ep.max_packet_size < MIN_BULK_PACKET_SIZE))
     {
         dev_err(&intf->dev, "write bulk max size too small");
 
@@ -549,7 +546,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     dev->read_ep.address = usb_endpoint_num(read_in);
     dev->read_ep.max_packet_size = usb_endpoint_maxp(read_in);
 
-    if (dev->read_ep.max_packet_size < MIN_BULK_PACKET_SIZE)
+    if (unlikely(dev->read_ep.max_packet_size < MIN_BULK_PACKET_SIZE))
     {
         dev_err(&intf->dev, "read bulk max size too small");
 
@@ -563,7 +560,7 @@ static int avic_usb_probe(struct usb_interface *intf, const struct usb_device_id
     SET_NETDEV_DEV(netdev, &intf->dev);
 
     retval = register_candev(netdev);
-    if (retval)
+    if (unlikely(retval))
     {
         dev_err(&intf->dev, "could not register CAN device: %d\n", retval);
 
