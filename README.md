@@ -1,31 +1,48 @@
 # AVIC Bridge driver
 
-The AVIC Bridge is used to communicate with the AVIC peripheral firmware. It supports an AVIC firmware controller and a CAN FD implementation for Linux SocketCAN.
+The Advanced Vehicle InterConnect Bridge (AVIC) driver supports dedicated comunication over USB with an AVIC peripheral. The AVIC protocol offers CAN FD network for Linux SocketCAN over USB, direct vehicle commands and various monitoring systems.
 
 ## Build
 
-Clone the source code and build the kernel module. If all the dependencies are installed then `make` will build the module.
+Make sure kernel headers are installed. On Debian based systems:
+
+`sudo apt install linux-headers-$(uname -r)`
+
+If all the dependencies are installed then `make` will build the module.
+
+## DKMS Support
+
+_This is the recommended method for installing the AVIC module._
+
+To keep the module up-to-date with the latest kernel the DKMS can be used with the AVIC module.
+Make sure DKMS is installed on the system. Run from the source directory of the module:
+
+```sudo make install_dkms```
+
+The module will be loaded when hardware is plugged into the system.
 
 ## Usage
 
-If the module is not installed then load the module from disk:
+If the module is not installed then load the module from path:
 
 ```sh
 sudo modprobe can-dev
 sudo insmod ./avic_can.ko
 ```
 
-Otherwise:
+If the module was installed after build, modprobe should be able to locate the module:
 
 ```sh
 sudo modprobe can-dev
 sudo modprobe avic_can.ko
 ```
 
-The Linux kernel will now show a CAN network interface. See `ip link`. To enable the CAN interface device you must set the bitrate and bring the interface up:
+If the module is loaded and the hardware was detected the Linux kernel will show a CAN network interface. To enable the CAN interface device you must set the bitrate and bring the interface up:
 
 ```sh
 sudo ip link set canX up type can bitrate 500000
 ```
 
-See the `can-utils` for testing and diagnosis.
+For further information on CAN network interfaces see `ip link`.
+
+Use the `can-utils` for testing and diagnosis.
